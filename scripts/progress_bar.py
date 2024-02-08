@@ -61,10 +61,9 @@ class ProgressBar:
             self.passed, self.failed, remaining_tests))
         print("See logs for more details (use -v for verbose output).")
 
-    def test_passed(self):
-        self.passed += 1
-        self.update()
-
-    def test_failed(self):
-        self.failed += 1
+    def update_with_value(self, passed: bool):
+        if passed:
+            self.passed += 1
+        else:
+            self.failed += 1
         self.update()

@@ -26,12 +26,14 @@ import argparse
 import os
 import shutil
 import subprocess
-import queue
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from progress_bar import ProgressBar
-
+from junit_xml_file import JUnitXMLFile
+import xml.sax.saxutils
 
 # "File" will suggest the absolute path to the file, including the extension.
 SCRIPT_LOCATION = Path(__file__).resolve().parent
@@ -42,42 +44,45 @@ J_UNIT_OUTPUT_FILE = PROJECT_LOCATION.joinpath(
 COMPILER_TEST_FOLDER = PROJECT_LOCATION.joinpath("compiler_tests").resolve()
 
 
-def fail_testcase(
-    init_message: tuple[str, str],
-    message: str,
-    log_queue: queue.Queue
-):
-    """
-    Updates the log queue with the JUnit and the stdout fail message.
-    """
-    init_print_message, init_xml_message = init_message
-    print_message = message
-    xml_message = (
-        f'<error type="error" message="{message}">{message}</error>\n'
-        '</testcase>\n'
-    )
-    log_queue.put(
-        (
-            init_print_message + print_message,
-            init_xml_message + xml_message,
-            False,
+@dataclass
+class Result:
+    """Class for keeping track of each test case result"""
+    test_case_name: str
+    passed: bool
+    error_log: Optional[str]
+
+    def to_xml(self) -> str:
+        if self.passed:
+            return (
+                f'<testcase name="{self.test_case_name}">\n'
+                f'</testcase>\n'
+            )
+
+        attribute = xml.sax.saxutils.quoteattr(self.error_log)
+        xml_tag_body = xml.sax.saxutils.escape(self.error_log)
+        return (
+            f'<testcase name="{self.test_case_name}">\n'
+            f'<error type="error" message={attribute}>\n{xml_tag_body}</error>\n'
+            f'</testcase>\n'
         )
-    )
+
+    def to_log(self) -> str:
+        if self.passed:
+            return f'{self.test_case_name}\n\t> Pass\n'
+        return f'{self.test_case_name}\n{self.error_log}\n'
 
 
-def run_test(driver: Path, log_queue: queue.Queue) -> bool:
+def run_test(driver: Path) -> Result:
     """
     Run an instance of a test case.
 
     Returns:
-    True if passed, False otherwise. This is to increment the pass counter.
+    A Result object with the status (pass/fail) of the test.
     """
 
     # Replaces example_driver.c -> example.c
     new_name = driver.stem.replace('_driver', '') + '.c'
     to_assemble = os.path.relpath(driver.parent.joinpath(new_name), PROJECT_LOCATION)
-    init_message = (str(to_assemble) + "\n",
-                    f'<testcase name="{to_assemble}">\n')
 
     result = subprocess.run(
         [
@@ -89,46 +94,62 @@ def run_test(driver: Path, log_queue: queue.Queue) -> bool:
         cwd=PROJECT_LOCATION,
     )
     if result.returncode != 0:
-        fail_testcase(
-            init_message,
-            result.stdout,
-            log_queue
-        )
-        return False
+        return Result(to_assemble, False, result.stdout)
 
-    init_print_message, init_xml_message = init_message
-    log_queue.put(
-        (
-            init_print_message + "\t> Pass\n",
-            init_xml_message + "</testcase>\n",
-            True,
-        )
-    )
-    return True
+    return Result(to_assemble, True, None)
 
 
-def empty_log_queue(
-    log_queue: queue.Queue,
+def process_result(
+    result: Result,
+    xml_file: JUnitXMLFile,
     verbose: bool = False,
-    progress_bar: ProgressBar = None
+    progress_bar: ProgressBar = None,
 ):
-    while not log_queue.empty():
-        print_msg, xml_message, test_passed = log_queue.get()
+    xml_file.write(result.to_xml())
 
-        with open(J_UNIT_OUTPUT_FILE, "a") as xml_file:
-            xml_file.write(xml_message)
+    if verbose:
+        print(result.to_log())
+        return
 
-        if verbose:
-            print(print_msg)
-            continue
+    if not progress_bar:
+        return
 
-        if not progress_bar:
-            continue
+    progress_bar.update_with_value(result.passed)
 
-        if test_passed:
-            progress_bar.test_passed()
-        else:
-            progress_bar.test_failed()
+
+def run_tests(args, xml_file):
+    drivers = list(Path(args.dir).rglob("*_driver.c"))
+    drivers = sorted(drivers, key=lambda p: (p.parent.name, p.name))
+    results = []
+
+    progress_bar = None
+    if sys.stdout.isatty():
+        progress_bar = ProgressBar(len(drivers))
+    else:
+        # Force verbose mode when not a terminal
+        args.verbose = True
+
+    if args.multithreading:
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(run_test, driver)
+                       for driver in drivers]
+
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result.passed)
+                process_result(result, xml_file, args.verbose, progress_bar)
+
+    else:
+        for driver in drivers:
+            result = run_test(driver)
+            results.append(result.passed)
+            process_result(result, xml_file, args.verbose, progress_bar)
+
+    passing = sum(results)
+    total = len(drivers)
+
+    print("\n>> Test Summary: {} Passed, {} Failed, {} Total".format(
+        passing, total-passing, total))
 
 
 def main():
@@ -163,54 +184,23 @@ def main():
     )
     args = parser.parse_args()
 
-    try:
-        shutil.rmtree(OUTPUT_FOLDER)
-    except Exception as e:
-        print(f"Error: {e}")
+    if os.path.isdir(OUTPUT_FOLDER):
+        try:
+            shutil.rmtree(OUTPUT_FOLDER)
+        except Exception as e:
+            print(f"Error removing output folder: {e}")
+            exit(1)
 
     Path(OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(["make", "-C", PROJECT_LOCATION, "bin/c_compiler"])
+    print("Running make bin/c_compiler...")
+    make_result = subprocess.run(["make", "-C", PROJECT_LOCATION, "bin/c_compiler"])
+    if make_result.returncode != 0:
+        print("Failed to make bin/c_compiler")
+        exit(1)
 
-    with open(J_UNIT_OUTPUT_FILE, "w") as f:
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-        f.write('<testsuite name="Integration test">\n')
-
-    drivers = list(Path(args.dir).rglob("*_driver.c"))
-    drivers = sorted(drivers, key=lambda p: (p.parent.name, p.name))
-    log_queue = queue.Queue()
-    results = []
-
-    progress_bar = None
-    if sys.stdout.isatty():
-        progress_bar = ProgressBar(len(drivers))
-    else:
-        # Force verbose mode when not a terminal
-        args.verbose = True
-
-    if args.multithreading:
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(run_test, driver, log_queue)
-                       for driver in drivers]
-
-            for future in as_completed(futures):
-                results.append(future.result())
-                empty_log_queue(log_queue, args.verbose, progress_bar)
-
-    else:
-        for driver in drivers:
-            result = run_test(driver, log_queue)
-            results.append(result)
-            empty_log_queue(log_queue, args.verbose, progress_bar)
-
-    passing = sum(results)
-    total = len(drivers)
-
-    with open(J_UNIT_OUTPUT_FILE, "a") as f:
-        f.write('</testsuite>\n')
-
-    print("\n>> Test Summary: {} Passed, {} Failed".format(
-        passing, total-passing))
+    with JUnitXMLFile(J_UNIT_OUTPUT_FILE) as xml_file:
+        run_tests(args, xml_file)
 
 
 if __name__ == "__main__":
