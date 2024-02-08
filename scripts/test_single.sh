@@ -23,6 +23,11 @@ set -e
 make --silent
 set +e
 
+COMPILER_LOG_FILES="${LOG_FILE_BASE}.compiler.stderr.log \n\t ${LOG_FILE_BASE}.compiler.stdout.log"
+COMPILED_LOG_FILES="${OUT}.s \n\t ${OUT}.s.printed"
+ASSEMBLER_LOG_FILES="${LOG_FILE_BASE}.assembler.stderr.log \n\t ${LOG_FILE_BASE}.assembler.stdout.log"
+LINKER_LOG_FILES="${LOG_FILE_BASE}.linker.stderr.log \n\t ${LOG_FILE_BASE}.linker.stdout.log"
+
 ASAN_OPTIONS=exitcode=0 timeout --foreground 15s \
     ./bin/c_compiler \
     -S "${TO_ASSEMBLE}" \
@@ -30,7 +35,7 @@ ASAN_OPTIONS=exitcode=0 timeout --foreground 15s \
     2>"${LOG_FILE_BASE}.compiler.stderr.log" \
     >"${LOG_FILE_BASE}.compiler.stdout.log"
 if [ $? -ne 0 ]; then
-    fail_testcase "Failed to compile testcase: \n\t ${LOG_FILE_BASE}.compiler.stderr.log \n\t ${LOG_FILE_BASE}.compiler.stdout.log \n\t ${OUT}.s \n\t ${OUT}.s.printed"
+    fail_testcase "Failed to compile testcase: \n\t ${COMPILER_LOG_FILES} \n\t ${COMPILED_LOG_FILES}"
 fi
 
 timeout --foreground 15s \
@@ -42,7 +47,7 @@ timeout --foreground 15s \
     2>"${LOG_FILE_BASE}.assembler.stderr.log" \
     >"${LOG_FILE_BASE}.assembler.stdout.log"
 if [ $? -ne 0 ]; then
-    fail_testcase "Failed to assemble: \n\t ${LOG_FILE_BASE}.compiler.stderr.log \n\t ${LOG_FILE_BASE}.compiler.stdout.log \n\t ${LOG_FILE_BASE}.assembler.stderr.log \n\t ${LOG_FILE_BASE}.assembler.stdout.log \n\t ${OUT}.s \n\t ${OUT}.s.printed"
+    fail_testcase "Failed to assemble: \n\t ${COMPILER_LOG_FILES} \n\t ${COMPILED_LOG_FILES} \n\t ${ASSEMBLER_LOG_FILES}"
 fi
 
 timeout --foreground 15s riscv64-unknown-elf-gcc \
@@ -54,14 +59,14 @@ timeout --foreground 15s riscv64-unknown-elf-gcc \
     2>"${LOG_FILE_BASE}.linker.stderr.log" \
     >"${LOG_FILE_BASE}.linker.stdout.log"
 if [ $? -ne 0 ]; then
-    fail_testcase "Failed to link driver: \n\t ${LOG_FILE_BASE}.compiler.stderr.log \n\t ${LOG_FILE_BASE}.compiler.stdout.log \n\t ${LOG_FILE_BASE}.linker.stderr.log \n\t ${LOG_FILE_BASE}.linker.stdout.log \n\t ${OUT}.s \n\t ${OUT}.s.printed"
+    fail_testcase "Failed to link driver: \n\t ${COMPILER_LOG_FILES} \n\t ${COMPILED_LOG_FILES} \n\t ${LINKER_LOG_FILES}"
 fi
 
 timeout --foreground 15s \
     spike pk "${OUT}" \
     >"${LOG_FILE_BASE}.simulation.log"
 if [ $? -ne 0 ]; then
-    fail_testcase "Failed to simulate: simulation did not exit with code 0: \n\t ${LOG_FILE_BASE}.compiler.stderr.log \n\t ${LOG_FILE_BASE}.compiler.stdout.log \n\t ${LOG_FILE_BASE}.simulation.log \n\t ${OUT}.s \n\t ${OUT}.s.printed"
+    fail_testcase "Failed to simulate: simulation did not exit with code 0: \n\t ${COMPILER_LOG_FILES} \n\t ${COMPILED_LOG_FILES} \n\t ${LOG_FILE_BASE}.simulation.log"
 else
     echo -e "\t> Pass\n"
     exit 0
