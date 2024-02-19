@@ -17,14 +17,14 @@ FS  (f|F|l|L)
 IS  (u|U|l|L)*
 
 %%
-"/*"			{/* consumes comment - TODO you might want to process and emit it in your assembly for debugging */}
+"/*"			{/*consumes comment - TODO you might want to process and emit it in your assembly for debugging */}
 
 "auto"			{return(AUTO);}
 "break"			{return(BREAK);}
 "case"			{return(CASE);}
 "char"			{return(CHAR);}
 "const"			{return(CONST);}
-"continue"  {return(CONTINUE);}
+"continue"  {return(CONTINUE);} // hello
 "default"		{return(DEFAULT);}
 "do"			  {return(DO);}
 "double"		{return(DOUBLE);}
